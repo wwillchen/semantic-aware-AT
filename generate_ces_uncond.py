@@ -11,12 +11,13 @@ import torch
 import PIL.Image
 import dnnlib
 from torch_utils import distributed as dist
-from torchvision.datasets import CIFAR10
+from torchvision.datasets import CIFAR10, SVHN
+from core.data import tiny_imagenet
 from torchvision.transforms import ToTensor
 from torch.autograd.functional import vjp
 from typing import Callable
 
-BASE_DATASETS = ["cifar10"] # more later
+BASE_DATASETS = ["cifar10", "svhn", "tiny_imagenet"] # more later
 
 def get_ce_sampler(
     net, latents, randn_like=torch.randn_like,
@@ -206,7 +207,12 @@ def main(network_pkl, outdir, subdirs, base_indices, max_batch_size, base_datase
 
     if base_dataset == 'cifar10':
         base_dataset = CIFAR10(os.path.join(base_dataset_root, base_dataset), train=not test, transform=ToTensor(), download=False)
-    else:
+    elif base_dataset == 'svhn':
+        base_dataset = SVHN(os.path.join(base_dataset_root, base_dataset), split = 'train' if not test else 'test', transform=ToTensor(), download=False)
+    elif base_dataset == 'tiny_imagenet':
+        net.img_resolution = 64
+        base_dataset = tiny_imagenet.TinyImagenet(root=base_dataset_root, split='train' if not test else 'val', transform=ToTensor(), download=True)
+    else:    
         raise ValueError(f"{base_dataset} not recognized")
 
     # Other ranks follow.
@@ -225,6 +231,7 @@ def main(network_pkl, outdir, subdirs, base_indices, max_batch_size, base_datase
         # final output.
         total_image_np = []
         total_label_np = []
+        total_l2_distances = []
 
         # iterate through the base_dataset
         for batch_indices in tqdm.tqdm(rank_batches, unit='batch', disable=(dist.get_rank() != 0 or not verbose)):
@@ -257,7 +264,7 @@ def main(network_pkl, outdir, subdirs, base_indices, max_batch_size, base_datase
 
             sampler_fn = get_ce_sampler(net, latents, randn_like=rnd.randn_like, **sampler_kwargs)
             images = (sampler_fn(mu_ce + torch.randn_like(mu_ce) * 0.2) + 1) / 2.
-            
+            l2_distances = torch.norm(images.view(images.size(0), -1) - base_data.view(base_data.size(0), -1), dim=1)
 
             # # testing grad functionality
             # print("IMAGES GENERATED. Now Testing Grad")
@@ -269,17 +276,21 @@ def main(network_pkl, outdir, subdirs, base_indices, max_batch_size, base_datase
 
             images_np_list = [torch.zeros_like(images_np) for _ in range(dist.get_world_size())]
             labels_np_list = [torch.zeros_like(base_label) for _ in range(dist.get_world_size())]
+            l2_distances_list = [torch.zeros_like(l2_distances) for _ in range(dist.get_world_size())]
 
             torch.distributed.all_gather(images_np_list, images_np)
             torch.distributed.all_gather(labels_np_list, base_label)
+            torch.distributed.all_gather(l2_distances_list, l2_distances)
             total_image_np.append(np.concatenate([i.cpu().numpy() for i in images_np_list]))
             total_label_np.append(np.concatenate([l.cpu().numpy() for l in labels_np_list]))
+            total_l2_distances.append(np.concatenate([d.cpu().numpy() for d in l2_distances_list]))
 
 
         # Done.
         torch.distributed.barrier()
         if dist.get_rank() == 0:
             np.savez(os.path.join(outdir, f'{ce_idx}.npz'), image=np.concatenate(total_image_np), label=np.concatenate(total_label_np))
+            np.savez(os.path.join(outdir, f'{ce_idx}_dist.npz'), l2_distance=np.concatenate(total_l2_distances))
     
     dist.print0('Done.')
 

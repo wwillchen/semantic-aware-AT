@@ -2,10 +2,12 @@
 
 python generate_ces_uncond.py --outdir=ce_data/out --base_indices=0-63 --batch=64 \
         --network=https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-cifar10-32x32-uncond-vp.pkl \
-        --ce_sigma 0.2 \
-        --base_dataset_root ~/data --base_dataset cifar10 --n_ces 1 --steps 100
+        --ce_sigma 0.5 \
+        --base_dataset_root ~/data --base_dataset svhn --n_ces 1 --steps 100
 
-python visualize_samples.py ./ce_data/out/0.npz
+python visualize_samples.py ce_data/out/0.npz
+
+python plot_distance.py ce_data/out/0_dist.npz
 
 # torchrun --standalone --nproc_per_node 4 generate_ces_uncond.py \
 #         --outdir ce_data/out_cifar10_0_49999_ce5 --base_indices=0-49999 --batch 512 \
